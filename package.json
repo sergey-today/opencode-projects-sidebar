@@ -1,0 +1,44 @@
+{
+  "name": "opencode-projects-sidebar",
+  "version": "0.1.0",
+  "description": "Projects and sessions sidebar for the OpenCode TUI",
+  "type": "module",
+  "main": "./projects-sidebar.tsx",
+  "exports": "./projects-sidebar.tsx",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sergey-today/opencode-projects-sidebar.git"
+  },
+  "homepage": "https://github.com/sergey-today/opencode-projects-sidebar#readme",
+  "bugs": {
+    "url": "https://github.com/sergey-today/opencode-projects-sidebar/issues"
+  },
+  "files": [
+    "projects-sidebar.tsx",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-tui",
+    "sidebar",
+    "sessions"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.27",
+    "@opencode-ai/sdk": "1.18.27",
+    "@opentui/core": "0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.7.2"
+  }
+}
