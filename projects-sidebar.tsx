@@ -24,14 +24,12 @@ const SPIN = ["◐", "◓", "◑", "◒"]
 type Cfg = {
   width: number
   limit: number
-  keybind: string
 }
 
 function parseOptions(raw: Record<string, unknown> | undefined): Cfg {
   const width = typeof raw?.width === "number" ? Math.max(20, Math.min(60, raw.width)) : 36
   const limit = typeof raw?.limit === "number" ? raw.limit : 50
-  const keybind = typeof raw?.keybind === "string" ? raw.keybind : "ctrl+shift+s"
-  return { width, limit, keybind }
+  return { width, limit }
 }
 
 function timeAgo(ts: number): string {
@@ -116,29 +114,6 @@ function StatusIndicator(props: {
   )
 }
 
-function Clickable(props: { fg: RGBA; label: string; run: () => void }) {
-  const [hov, setHov] = createSignal(false)
-  return (
-    <box
-      flexDirection="row"
-      alignItems="center"
-      justifyContent="center"
-      width={3}
-      height={1}
-      flexShrink={0}
-      backgroundColor={hov() ? props.fg : undefined}
-      onMouseUp={(e: { stopPropagation(): void }) => {
-        e.stopPropagation()
-        props.run()
-      }}
-      onMouseOver={() => setHov(true)}
-      onMouseOut={() => setHov(false)}
-    >
-      <text fg={hov() ? "black" : props.fg}>{props.label}</text>
-    </box>
-  )
-}
-
 export const id = "projects-sidebar"
 
 export const tui: TuiPlugin = async (api, rawOptions) => {
@@ -151,44 +126,10 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const [completed, setCompleted] = createSignal<Record<string, boolean>>({})
   const [error, setError] = createSignal<string | undefined>()
 
-  const savedOpen = api.kv.get<boolean | undefined>("projects_sb.open")
-  const [open, setOpen] = createSignal(savedOpen ?? false)
-  let lastW = 0
-  let decided = false
-  const decide = (w: number) => {
-    if (decided || api.kv.get("projects_sb.open") !== undefined) return
-    decided = true
-    const wide = w >= cfg.width + 92
-    api.kv.set("projects_sb.open", wide)
-    if (wide) setOpen(true)
-  }
-  const autoTimer = setInterval(() => {
-    const w = (api.renderer.width ?? 0) as number
-    if (w > 0 && w === lastW) {
-      clearInterval(autoTimer)
-      decide(w)
-    } else {
-      lastW = w
-    }
-  }, 400)
-  const fallbackTimer = setTimeout(() => {
-    if (!decided) {
-      clearInterval(autoTimer)
-      decide((api.renderer.width ?? 0) as number)
-    }
-  }, 6_000)
-  api.lifecycle.onDispose(() => { clearInterval(autoTimer); clearTimeout(fallbackTimer) })
   const [folded, setFolded] = createSignal<Record<string, boolean>>(
     api.kv.get<Record<string, boolean>>("projects_sb.folded") ?? {},
   )
 
-  const toggle = () => {
-    setOpen((v) => {
-      const next = !v
-      api.kv.set("projects_sb.open", next)
-      return next
-    })
-  }
   const toggleFold = (projectId: string) => {
     setFolded((prev) => {
       const next = { ...prev, [projectId]: !prev[projectId] }
@@ -315,52 +256,25 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
 
   for (const unsub of unsubs) api.lifecycle.onDispose(unsub)
 
-  // ---- keymap ----
-  api.keymap.registerLayer({
-    commands: [
-      {
-        name: "projects-sidebar.toggle",
-        title: "Toggle projects sidebar",
-        category: "UI",
-        namespace: "palette",
-        run: () => toggle(),
-      },
-      {
-        name: "projects-sidebar.refresh",
-        title: "Refresh projects sidebar",
-        category: "UI",
-        run: () => void refreshAll(),
-      },
-    ],
-    bindings: [
-      { key: cfg.keybind, cmd: "projects-sidebar.toggle" },
-      { key: "ctrl+s", cmd: "projects-sidebar.toggle" },
-    ],
-  })
-
-  // Render inside opencode's native session sidebar. The app slot is outside
-  // the main layout and cannot be used as a flex sidebar without reflowing it.
+  // OpenCode orders native MCP and LSP content at 200 and 300 respectively.
   api.slots.register({
+    order: 350,
     slots: {
       sidebar_content(ctx) {
         return (
-          <Show when={open()}>
-            <SidebarPanel
-              api={api}
-              theme={ctx.theme}
-              cfg={cfg}
-              toggle={toggle}
-              toggleFold={toggleFold}
-              folded={folded}
-              sessions={sessions}
-              statuses={statuses}
-              awaiting={awaiting}
-              completed={completed}
-              clearCompleted={clearCompleted}
-              error={error}
-              refresh={refreshAll}
-            />
-          </Show>
+          <SidebarPanel
+            api={api}
+            theme={ctx.theme}
+            cfg={cfg}
+            toggleFold={toggleFold}
+            folded={folded}
+            sessions={sessions}
+            statuses={statuses}
+            awaiting={awaiting}
+            completed={completed}
+            clearCompleted={clearCompleted}
+            error={error}
+          />
         )
       },
     },
@@ -373,7 +287,6 @@ type PanelProps = {
   api: TuiPluginApi
   theme: TuiTheme
   cfg: Cfg
-  toggle: () => void
   toggleFold: (projectId: string) => void
   folded: () => Record<string, boolean>
   sessions: () => GlobalSession[]
@@ -382,7 +295,6 @@ type PanelProps = {
   completed: () => Record<string, boolean>
   clearCompleted: (sessionID: string) => void
   error: () => string | undefined
-  refresh: () => Promise<void>
 }
 
 type ProjectGroup = {
@@ -447,36 +359,13 @@ function SidebarPanel(props: PanelProps) {
     return groups
   })
 
-  const totalSessions = createMemo(() =>
-    list().reduce((acc, group) => acc + group.sessions.length, 0),
-  )
-
   const colors = t()
 
   return (
     <box
       flexDirection="column"
-      width={cfg.width}
       flexShrink={0}
-      backgroundColor={colors.backgroundPanel}
     >
-      {/* Header */}
-      <box
-        flexDirection="row"
-        alignItems="center"
-        paddingLeft={2}
-        paddingRight={1}
-        gap={1}
-        flexShrink={0}
-      >
-        <box flexGrow={1} paddingY={1}>
-          <text fg={colors.text}><b>Projects</b></text>
-          <text fg={colors.textMuted}> {totalSessions()} sessions</text>
-        </box>
-        <Clickable fg={colors.textMuted} label="↻" run={() => void props.refresh()} />
-        <Clickable fg={colors.textMuted} label=" ✕" run={props.toggle} />
-      </box>
-
       {/* Error banner */}
       <Show when={props.error()}>
         <box paddingLeft={2} paddingTop={1} paddingBottom={1} flexShrink={0}>
@@ -484,17 +373,7 @@ function SidebarPanel(props: PanelProps) {
         </box>
       </Show>
 
-      {/* Body */}
-      <scrollbox
-        flexGrow={1}
-        minHeight={0}
-        verticalScrollbarOptions={{
-          trackOptions: {
-            backgroundColor: colors.backgroundPanel,
-            foregroundColor: colors.backgroundElement,
-          },
-        }}
-      >
+      <box flexDirection="column" flexShrink={0}>
         <For each={list()}>
           {(group) => {
             const expanded = () => !props.folded()[group.project.id]
@@ -636,13 +515,6 @@ function SidebarPanel(props: PanelProps) {
             <text fg={colors.textMuted}>No sessions yet</text>
           </box>
         </Show>
-      </scrollbox>
-
-      {/* Footer */}
-      <box flexShrink={0} paddingLeft={2} paddingRight={1} paddingY={1}>
-        <text fg={colors.textMuted}>
-          {truncate(`ctrl+s toggle · click row to open`, cfg.width - 4)}
-        </text>
       </box>
     </box>
   )

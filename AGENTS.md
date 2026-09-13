@@ -34,8 +34,8 @@ After changing `projects-sidebar.tsx`:
 3. Fully exit all OpenCode processes and start OpenCode again. The plugin is
    loaded when the process starts, so opening a new session is not enough.
 
-4. Open the projects sidebar with its configured key binding or `ctrl+s`.
-   Check the changed behavior in the TUI.
+4. Open the standard OpenCode session sidebar and check the project/session
+   list below the native LSP section in the TUI.
 
 For status-indicator changes, test these cases:
 
