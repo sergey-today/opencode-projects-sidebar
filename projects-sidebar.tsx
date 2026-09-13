@@ -19,7 +19,7 @@ import type {
   SessionStatus,
 } from "@opencode-ai/sdk/v2"
 
-const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+const SPIN = ["◐", "◓", "◑", "◒"]
 
 type Cfg = {
   width: number
@@ -98,6 +98,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const [sessions, setSessions] = createSignal<GlobalSession[]>([])
   const [statuses, setStatuses] = createSignal<Record<string, SessionStatus>>({})
   const [awaiting, setAwaiting] = createSignal<Record<string, boolean>>({})
+  const [completed, setCompleted] = createSignal<Record<string, boolean>>({})
   const [error, setError] = createSignal<string | undefined>()
 
   const savedOpen = api.kv.get<boolean | undefined>("projects_sb.open")
@@ -179,20 +180,48 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
       return next
     })
 
+  const clearCompleted = (sessionID: string) =>
+    setCompleted((prev) => {
+      if (!prev[sessionID]) return prev
+      const next = { ...prev }
+      delete next[sessionID]
+      return next
+    })
+
+  const markCompleted = (sessionID: string) => {
+    const route = api.route.current
+    if (route.name === "session" && route.params?.sessionID === sessionID) return
+    setCompleted((prev) => ({ ...prev, [sessionID]: true }))
+  }
+
   unsubs.push(
     api.event.on("session.status", (evt) => {
       const { sessionID, status } = evt.properties
+      const previous = statuses()[sessionID]
       setStatuses((prev) => ({ ...prev, [sessionID]: status }))
-      if (status.type === "busy") clearAwaiting(sessionID)
+      if (status.type === "busy") {
+        clearAwaiting(sessionID)
+        clearCompleted(sessionID)
+      } else if (
+        status.type === "idle" &&
+        (previous?.type === "busy" || previous?.type === "retry")
+      ) {
+        markCompleted(sessionID)
+      }
     }),
   )
 
   unsubs.push(
     api.event.on("session.idle", (evt) => {
+      const sessionID = evt.properties.sessionID
+      const previous = statuses()[sessionID]
       setStatuses((prev) => ({
         ...prev,
-        [evt.properties.sessionID]: { type: "idle" },
+        [sessionID]: { type: "idle" },
       }))
+      if (previous?.type === "busy" || previous?.type === "retry") {
+        markCompleted(sessionID)
+      }
     }),
   )
 
@@ -276,6 +305,8 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
               sessions={sessions}
               statuses={statuses}
               awaiting={awaiting}
+              completed={completed}
+              clearCompleted={clearCompleted}
               error={error}
               refresh={refreshAll}
             />
@@ -298,6 +329,8 @@ type PanelProps = {
   sessions: () => GlobalSession[]
   statuses: () => Record<string, SessionStatus>
   awaiting: () => Record<string, boolean>
+  completed: () => Record<string, boolean>
+  clearCompleted: (sessionID: string) => void
   error: () => string | undefined
   refresh: () => Promise<void>
 }
@@ -323,6 +356,11 @@ function SidebarPanel(props: PanelProps) {
     const route = props.api.route.current
     if (route.name !== "session") return undefined
     return route.params?.sessionID
+  })
+
+  createEffect(() => {
+    const id = currentID()
+    if (typeof id === "string") props.clearCompleted(id)
   })
 
   const list = createMemo<ProjectGroup[]>(() => {
@@ -440,10 +478,12 @@ function SidebarPanel(props: PanelProps) {
                 <Show when={expanded()}>
                   <For each={group.sessions}>
                     {(session) => {
-                      const active = currentID() === session.id
+                      const active = () => currentID() === session.id
                       const hover = () => hoverSession() === session.id
                       const status = () => props.statuses()[session.id]
                       const isAwaiting = () => !!props.awaiting()[session.id]
+                      const isCompleted = () =>
+                        !active() && !!props.completed()[session.id]
                       const title = truncate(
                         session.title || "Untitled",
                         cfg.width - 10,
@@ -453,6 +493,7 @@ function SidebarPanel(props: PanelProps) {
                         if (st?.type === "busy") return "busy"
                         if (st?.type === "retry") return "retry"
                         if (isAwaiting()) return "awaiting"
+                        if (isCompleted()) return "completed"
                         return "idle"
                       }
 
@@ -465,7 +506,7 @@ function SidebarPanel(props: PanelProps) {
                           height={1}
                           flexShrink={0}
                           backgroundColor={
-                            active || hover()
+                            active() || hover()
                               ? colors.backgroundElement
                               : undefined
                           }
@@ -482,28 +523,37 @@ function SidebarPanel(props: PanelProps) {
                             when={icon() === "busy"}
                             fallback={
                               <Show
-                                when={icon() === "retry"}
+                                when={icon() === "completed"}
                                 fallback={
                                   <Show
-                                    when={icon() === "awaiting"}
+                                    when={icon() === "retry"}
                                     fallback={
-                                      <text fg={colors.textMuted}>·</text>
+                                      <Show
+                                        when={icon() === "awaiting"}
+                                        fallback={
+                                          <text fg={colors.textMuted}>·</text>
+                                        }
+                                      >
+                                        <text fg={colors.info}><b>?</b></text>
+                                      </Show>
                                     }
                                   >
-                                    <text fg={colors.info}><b>?</b></text>
+                                    <text fg={colors.error}>!</text>
                                   </Show>
                                 }
                               >
-                                <text fg={colors.error}>!</text>
+                                <text fg={colors.success}>●</text>
                               </Show>
                             }
                           >
-                            <Spinner fg={colors.primary} />
+                            <Spinner fg={colors.warning} />
                           </Show>
+
+                          <text> </text>
 
                           <text
                             fg={
-                              active || hover()
+                              active() || hover()
                                 ? colors.text
                                 : colors.textMuted
                             }
