@@ -75,6 +75,47 @@ function BlinkingDot(props: { fg: RGBA }) {
   return <text fg={props.fg}>{visible() ? "●" : " "}</text>
 }
 
+type Indicator = "awaiting" | "busy" | "completed" | "retry" | "idle"
+
+function StatusIndicator(props: {
+  state: Indicator | undefined
+  colors: TuiTheme["current"]
+}) {
+  return (
+    <Show
+      when={props.state === "awaiting"}
+      fallback={
+        <Show
+          when={props.state === "busy"}
+          fallback={
+            <Show
+              when={props.state === "completed"}
+              fallback={
+                <Show
+                  when={props.state === "retry"}
+                  fallback={
+                    <Show when={props.state === "idle"} fallback={<></>}>
+                      <text fg={props.colors.textMuted}>·</text>
+                    </Show>
+                  }
+                >
+                  <text fg={props.colors.error}>!</text>
+                </Show>
+              }
+            >
+              <text fg={props.colors.success}>●</text>
+            </Show>
+          }
+        >
+          <Spinner fg={props.colors.warning} />
+        </Show>
+      }
+    >
+      <BlinkingDot fg={props.colors.warning} />
+    </Show>
+  )
+}
+
 function Clickable(props: { fg: RGBA; label: string; run: () => void }) {
   const [hov, setHov] = createSignal(false)
   return (
@@ -460,6 +501,34 @@ function SidebarPanel(props: PanelProps) {
             const projectName =
               group.project.name || baseName(group.project.worktree)
             const displayName = truncate(projectName, cfg.width - 8)
+            const groupIndicator = (): Indicator | undefined => {
+              if (group.sessions.some((session) => props.awaiting()[session.id])) {
+                return "awaiting"
+              }
+              if (
+                group.sessions.some(
+                  (session) => props.statuses()[session.id]?.type === "busy",
+                )
+              ) {
+                return "busy"
+              }
+              if (
+                group.sessions.some(
+                  (session) => props.statuses()[session.id]?.type === "retry",
+                )
+              ) {
+                return "retry"
+              }
+              if (
+                group.sessions.some(
+                  (session) =>
+                    session.id !== currentID() && !!props.completed()[session.id],
+                )
+              ) {
+                return "completed"
+              }
+              return undefined
+            }
 
             return (
               <>
@@ -479,6 +548,7 @@ function SidebarPanel(props: PanelProps) {
                 >
                   <text fg={colors.textMuted}>{expanded() ? "▾" : "▸"}</text>
                   <text fg={colors.text}><b>{displayName}</b></text>
+                  <StatusIndicator state={groupIndicator()} colors={colors} />
                   <box flexGrow={1} />
                   <text fg={colors.textMuted}>{group.sessions.length}</text>
                 </box>
@@ -497,7 +567,7 @@ function SidebarPanel(props: PanelProps) {
                         session.title || "Untitled",
                         cfg.width - 10,
                       )
-                      const icon = () => {
+                      const icon = (): Indicator => {
                         const st = status()
                         if (isAwaiting()) return "awaiting"
                         if (st?.type === "busy") return "busy"
@@ -528,35 +598,7 @@ function SidebarPanel(props: PanelProps) {
                           onMouseOver={() => setHoverSession(session.id)}
                           onMouseOut={() => setHoverSession(undefined)}
                         >
-                          <Show
-                            when={icon() === "awaiting"}
-                            fallback={
-                              <Show
-                                when={icon() === "busy"}
-                                fallback={
-                                  <Show
-                                    when={icon() === "completed"}
-                                    fallback={
-                                      <Show
-                                        when={icon() === "retry"}
-                                        fallback={
-                                          <text fg={colors.textMuted}>·</text>
-                                        }
-                                      >
-                                        <text fg={colors.error}>!</text>
-                                      </Show>
-                                    }
-                                  >
-                                    <text fg={colors.success}>●</text>
-                                  </Show>
-                                }
-                              >
-                                <Spinner fg={colors.warning} />
-                              </Show>
-                            }
-                          >
-                            <BlinkingDot fg={colors.warning} />
-                          </Show>
+                          <StatusIndicator state={icon()} colors={colors} />
 
                           <text> </text>
 

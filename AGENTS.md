@@ -46,6 +46,8 @@ For status-indicator changes, test these cases:
   shows the green filled circle.
 - Opening that finished session clears the green indicator.
 - The title remains separated from the status symbol by one space.
+- A project header shows the highest-priority indicator from its sessions,
+  whether the project is collapsed or expanded.
 
 Do not run `npm publish`, rebuild the plugin, or reinstall the package for this
 local iteration workflow.
