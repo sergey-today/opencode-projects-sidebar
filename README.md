@@ -9,7 +9,6 @@ and lets you open a session directly from the sidebar.
 ## Requirements
 
 - OpenCode 1.18.27 or a compatible release with TUI plugin slots
-- A terminal with at least 128 columns for automatic first-time opening
 
 The plugin currently renders in the native session sidebar. It is not shown
 on the home screen because OpenCode does not expose a home-screen sidebar slot.
