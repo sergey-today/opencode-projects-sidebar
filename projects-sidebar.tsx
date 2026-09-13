@@ -13,6 +13,7 @@ import type {
   TuiPluginApi,
   TuiTheme,
 } from "@opencode-ai/plugin/tui"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type {
   GlobalSession,
   ProjectSummary,
@@ -28,7 +29,7 @@ type Cfg = {
 
 function parseOptions(raw: Record<string, unknown> | undefined): Cfg {
   const width = typeof raw?.width === "number" ? Math.max(20, Math.min(60, raw.width)) : 36
-  const limit = typeof raw?.limit === "number" ? raw.limit : 50
+  const limit = typeof raw?.limit === "number" ? raw.limit : 500
   return { width, limit }
 }
 
@@ -118,6 +119,19 @@ export const id = "projects-sidebar"
 
 export const tui: TuiPlugin = async (api, rawOptions) => {
   const cfg = parseOptions(rawOptions as Record<string, unknown> | undefined)
+  // The injected client scopes GET requests to the current session directory.
+  const scopedClient = api.client.experimental.session as unknown as {
+    client: { getConfig(): { baseUrl?: string; headers?: HeadersInit; fetch?: typeof fetch } }
+  }
+  const clientConfig = scopedClient.client.getConfig()
+  const headers = new Headers(clientConfig.headers)
+  headers.delete("x-opencode-directory")
+  headers.delete("x-opencode-workspace")
+  const globalClient = createOpencodeClient({
+    baseUrl: clientConfig.baseUrl,
+    headers,
+    fetch: clientConfig.fetch,
+  })
 
   // ---- state ----
   const [sessions, setSessions] = createSignal<GlobalSession[]>([])
@@ -142,7 +156,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const refreshAll = async () => {
     try {
       const [sessRes, statRes] = await Promise.all([
-        api.client.experimental.session.list({ limit: cfg.limit }),
+        globalClient.experimental.session.list({ limit: cfg.limit }),
         api.client.session.status(),
       ])
       if (sessRes.error) {
@@ -159,6 +173,8 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
     }
   }
   await refreshAll()
+  const refreshTimer = setInterval(() => void refreshAll(), 5_000)
+  api.lifecycle.onDispose(() => clearInterval(refreshTimer))
 
   // ---- events ----
   const unsubs: Array<() => void> = []

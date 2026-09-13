@@ -5,6 +5,8 @@
 - The plugin entry point is `projects-sidebar.tsx`.
 - The package ships the TypeScript/TSX source directly. There is no build step.
 - `npm run typecheck` runs the TypeScript validation.
+- `experimental.session.list` returns local OpenCode sessions across projects;
+  do not replace it with direct SQLite access.
 
 Keep the repository file as the source of truth. The OpenCode process used for
 manual testing may load a separate local copy from:

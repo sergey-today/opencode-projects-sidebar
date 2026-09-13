@@ -37,7 +37,7 @@ To use custom options, use the tuple form:
       "opencode-projects-sidebar",
       {
         "width": 36,
-        "limit": 50
+        "limit": 500
       }
     ]
   ]
@@ -48,6 +48,8 @@ To use custom options, use the tuple form:
 
 - The project and session list is always rendered inside OpenCode's standard
   session sidebar below the native LSP section.
+- The list includes sessions from all local projects known to OpenCode and
+  refreshes every five seconds.
 - Click a project header to collapse or expand its sessions.
 - Click a session to open it.
 
@@ -56,7 +58,7 @@ To use custom options, use the tuple form:
 | Option | Default | Description |
 | --- | ---: | --- |
 | `width` | `36` | Maximum text width used for names, clamped to 20-60 columns |
-| `limit` | `50` | Maximum number of sessions to request |
+| `limit` | `500` | Maximum number of local sessions to request |
 
 ## Development
 
