@@ -66,6 +66,15 @@ function Spinner(props: { fg: RGBA }) {
   return <text fg={props.fg}>{SPIN[i()]}</text>
 }
 
+function BlinkingDot(props: { fg: RGBA }) {
+  const [visible, setVisible] = createSignal(true)
+  createEffect(() => {
+    const h = setInterval(() => setVisible((value) => !value), 500)
+    onCleanup(() => clearInterval(h))
+  })
+  return <text fg={props.fg}>{visible() ? "●" : " "}</text>
+}
+
 function Clickable(props: { fg: RGBA; label: string; run: () => void }) {
   const [hov, setHov] = createSignal(false)
   return (
@@ -490,9 +499,9 @@ function SidebarPanel(props: PanelProps) {
                       )
                       const icon = () => {
                         const st = status()
+                        if (isAwaiting()) return "awaiting"
                         if (st?.type === "busy") return "busy"
                         if (st?.type === "retry") return "retry"
-                        if (isAwaiting()) return "awaiting"
                         if (isCompleted()) return "completed"
                         return "idle"
                       }
@@ -520,33 +529,33 @@ function SidebarPanel(props: PanelProps) {
                           onMouseOut={() => setHoverSession(undefined)}
                         >
                           <Show
-                            when={icon() === "busy"}
+                            when={icon() === "awaiting"}
                             fallback={
                               <Show
-                                when={icon() === "completed"}
+                                when={icon() === "busy"}
                                 fallback={
                                   <Show
-                                    when={icon() === "retry"}
+                                    when={icon() === "completed"}
                                     fallback={
                                       <Show
-                                        when={icon() === "awaiting"}
+                                        when={icon() === "retry"}
                                         fallback={
                                           <text fg={colors.textMuted}>·</text>
                                         }
                                       >
-                                        <text fg={colors.info}><b>?</b></text>
+                                        <text fg={colors.error}>!</text>
                                       </Show>
                                     }
                                   >
-                                    <text fg={colors.error}>!</text>
+                                    <text fg={colors.success}>●</text>
                                   </Show>
                                 }
                               >
-                                <text fg={colors.success}>●</text>
+                                <Spinner fg={colors.warning} />
                               </Show>
                             }
                           >
-                            <Spinner fg={colors.warning} />
+                            <BlinkingDot fg={colors.warning} />
                           </Show>
 
                           <text> </text>

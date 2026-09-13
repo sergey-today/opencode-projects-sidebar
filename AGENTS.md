@@ -40,6 +40,8 @@ After changing `projects-sidebar.tsx`:
 For status-indicator changes, test these cases:
 
 - A running session shows the orange animated spinner.
+- A session waiting for a question or permission shows a blinking orange
+  filled circle instead of the spinner.
 - When a response finishes while another session is open, the finished session
   shows the green filled circle.
 - Opening that finished session clears the green indicator.
