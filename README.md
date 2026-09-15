@@ -51,6 +51,9 @@ To use custom options, use the tuple form:
   refreshes every five seconds.
 - Click a project header to collapse or expand its sessions.
 - Click a session to open it.
+- Hover a project header to create a clean session in its directory or rename
+  the project.
+- Hover a session to rename it.
 
 ## Options
 

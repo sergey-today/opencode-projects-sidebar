@@ -176,6 +176,93 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const refreshTimer = setInterval(() => void refreshAll(), 5_000)
   api.lifecycle.onDispose(() => clearInterval(refreshTimer))
 
+  const showActionError = (message: string) =>
+    api.ui.toast({ variant: "error", message })
+
+  const createSession = async (directory: string) => {
+    try {
+      const result = await globalClient.v2.session.create({
+        location: { directory },
+      })
+      if (result.error || !result.data) {
+        showActionError("Failed to create session")
+        return
+      }
+      await refreshAll()
+      api.route.navigate("session", { sessionID: result.data.data.id })
+    } catch {
+      showActionError("Failed to create session")
+    }
+  }
+
+  const renameSession = async (
+    sessionID: string,
+    directory: string,
+    title: string,
+  ): Promise<boolean> => {
+    try {
+      const result = await globalClient.session.update({
+        sessionID,
+        directory,
+        title,
+      })
+      if (result.error) {
+        showActionError("Failed to rename session")
+        return false
+      }
+      await refreshAll()
+      return true
+    } catch {
+      showActionError("Failed to rename session")
+      return false
+    }
+  }
+
+  const renameProject = async (
+    projectID: string,
+    directory: string,
+    name: string,
+  ): Promise<boolean> => {
+    try {
+      const result = await globalClient.project.update({
+        projectID,
+        directory,
+        name,
+      })
+      if (result.error) {
+        showActionError("Failed to rename project")
+        return false
+      }
+      await refreshAll()
+      return true
+    } catch {
+      showActionError("Failed to rename project")
+      return false
+    }
+  }
+
+  const openPrompt = (
+    title: string,
+    value: string,
+    onConfirm: (value: string) => Promise<boolean>,
+  ) => {
+    const DialogPrompt = api.ui.DialogPrompt
+    api.ui.dialog.replace(() => (
+      <DialogPrompt
+        title={title}
+        value={value}
+        onConfirm={(input) => {
+          const next = input.trim()
+          if (!next) return
+          void onConfirm(next).then((success) => {
+            if (success) api.ui.dialog.clear()
+          })
+        }}
+        onCancel={() => api.ui.dialog.clear()}
+      />
+    ))
+  }
+
   // ---- events ----
   const unsubs: Array<() => void> = []
 
@@ -289,6 +376,10 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
             awaiting={awaiting}
             completed={completed}
             clearCompleted={clearCompleted}
+            createSession={createSession}
+            renameSession={renameSession}
+            renameProject={renameProject}
+            openPrompt={openPrompt}
             error={error}
           />
         )
@@ -310,11 +401,20 @@ type PanelProps = {
   awaiting: () => Record<string, boolean>
   completed: () => Record<string, boolean>
   clearCompleted: (sessionID: string) => void
+  createSession: (directory: string) => void
+  renameSession: (sessionID: string, directory: string, title: string) => Promise<boolean>
+  renameProject: (projectID: string, directory: string, name: string) => Promise<boolean>
+  openPrompt: (
+    title: string,
+    value: string,
+    onConfirm: (value: string) => Promise<boolean>,
+  ) => void
   error: () => string | undefined
 }
 
 type ProjectGroup = {
   project: ProjectSummary
+  renameProjectID?: string
   sessions: GlobalSession[]
 }
 
@@ -322,12 +422,48 @@ function SidebarPanel(props: PanelProps) {
   const t = () => props.theme.current
   const cfg = props.cfg
 
+  const [hoverProject, setHoverProject] = createSignal<string | undefined>()
   const [hoverSession, setHoverSession] = createSignal<string | undefined>()
+  let projectHoverTimer: ReturnType<typeof setTimeout> | undefined
+  let sessionHoverTimer: ReturnType<typeof setTimeout> | undefined
   const [now, setNow] = createSignal(Date.now())
 
   createEffect(() => {
     const h = setInterval(() => setNow(Date.now()), 60_000)
     onCleanup(() => clearInterval(h))
+  })
+
+  const showProjectHover = (projectID: string) => {
+    if (projectHoverTimer) clearTimeout(projectHoverTimer)
+    projectHoverTimer = undefined
+    setHoverProject(projectID)
+  }
+
+  const hideProjectHover = () => {
+    if (projectHoverTimer) clearTimeout(projectHoverTimer)
+    projectHoverTimer = setTimeout(() => {
+      projectHoverTimer = undefined
+      setHoverProject(undefined)
+    }, 100)
+  }
+
+  const showSessionHover = (sessionID: string) => {
+    if (sessionHoverTimer) clearTimeout(sessionHoverTimer)
+    sessionHoverTimer = undefined
+    setHoverSession(sessionID)
+  }
+
+  const hideSessionHover = () => {
+    if (sessionHoverTimer) clearTimeout(sessionHoverTimer)
+    sessionHoverTimer = setTimeout(() => {
+      sessionHoverTimer = undefined
+      setHoverSession(undefined)
+    }, 100)
+  }
+
+  onCleanup(() => {
+    if (projectHoverTimer) clearTimeout(projectHoverTimer)
+    if (sessionHoverTimer) clearTimeout(sessionHoverTimer)
   })
 
   const currentID = createMemo(() => {
@@ -344,18 +480,31 @@ function SidebarPanel(props: PanelProps) {
   const list = createMemo<ProjectGroup[]>(() => {
     void now()
     const map = new Map<string, ProjectGroup>()
+    const projectsByWorktree = new Map<string, ProjectSummary>()
+    for (const session of props.sessions()) {
+      if (session.parentID !== undefined || !session.project || session.project.worktree === "/") continue
+      projectsByWorktree.set(session.project.worktree, session.project)
+    }
+
     for (const session of props.sessions()) {
       if (session.parentID !== undefined) continue
-      const key = session.project?.id ?? session.projectID
+      const globalSession = !session.project || session.project.worktree === "/"
+      // Global sessions retain their directory but share a synthetic project
+      // record rooted at /. Reuse a known project for that directory when one
+      // exists; otherwise keep the directory in its own sidebar group.
+      const project = globalSession
+        ? projectsByWorktree.get(session.directory)
+        : session.project
+      const key = project?.id ?? `directory:${session.directory}`
       let group = map.get(key)
       if (!group) {
-        const project = session.project
         group = {
           project: {
             id: key,
             worktree: project?.worktree ?? session.directory,
             name: project?.name,
           },
+          renameProjectID: project?.id,
           sessions: [],
         }
         map.set(key, group)
@@ -393,6 +542,7 @@ function SidebarPanel(props: PanelProps) {
         <For each={list()}>
           {(group) => {
             const expanded = () => !props.folded()[group.project.id]
+            const projectHover = () => hoverProject() === group.project.id
             const projectName =
               group.project.name || baseName(group.project.worktree)
             const displayName = truncate(projectName, cfg.width - 8)
@@ -436,16 +586,52 @@ function SidebarPanel(props: PanelProps) {
                   paddingTop={1}
                   gap={1}
                   flexShrink={0}
+                  backgroundColor={projectHover() ? colors.backgroundElement : undefined}
                   onMouseUp={(e: { stopPropagation(): void }) => {
                     e.stopPropagation()
                     props.toggleFold(group.project.id)
                   }}
+                  onMouseOver={() => showProjectHover(group.project.id)}
+                  onMouseOut={hideProjectHover}
                 >
                   <text fg={colors.textMuted}>{expanded() ? "▾" : "▸"}</text>
                   <text fg={colors.text}><b>{displayName}</b></text>
                   <StatusIndicator state={groupIndicator()} colors={colors} />
                   <box flexGrow={1} />
                   <text fg={colors.textMuted}>{group.sessions.length}</text>
+                  <Show when={projectHover()}>
+                    <text
+                      fg={colors.primary}
+                      onMouseUp={(e: { stopPropagation(): void }) => {
+                        e.stopPropagation()
+                        props.createSession(group.project.worktree)
+                      }}
+                    >
+                      +
+                    </text>
+                    <Show when={group.renameProjectID}>
+                      {(projectID) => (
+                        <text
+                          fg={colors.primary}
+                          onMouseUp={(e: { stopPropagation(): void }) => {
+                            e.stopPropagation()
+                            props.openPrompt(
+                              "Rename project",
+                              projectName,
+                              (name) =>
+                                props.renameProject(
+                                  projectID(),
+                                  group.project.worktree,
+                                  name,
+                                ),
+                            )
+                          }}
+                        >
+                          ✎
+                        </text>
+                      )}
+                    </Show>
+                  </Show>
                 </box>
 
                 {/* Sessions */}
@@ -490,8 +676,8 @@ function SidebarPanel(props: PanelProps) {
                               sessionID: session.id,
                             })
                           }}
-                          onMouseOver={() => setHoverSession(session.id)}
-                          onMouseOut={() => setHoverSession(undefined)}
+                          onMouseOver={() => showSessionHover(session.id)}
+                          onMouseOut={hideSessionHover}
                         >
                           <StatusIndicator state={icon()} colors={colors} />
 
@@ -516,6 +702,27 @@ function SidebarPanel(props: PanelProps) {
                                 Date.now(),
                             )}
                           </text>
+                          <Show when={hover()}>
+                            <text> </text>
+                            <text
+                              fg={colors.primary}
+                              onMouseUp={(e: { stopPropagation(): void }) => {
+                                e.stopPropagation()
+                                props.openPrompt(
+                                  "Rename session",
+                                  session.title || "Untitled",
+                                  (name) =>
+                                    props.renameSession(
+                                      session.id,
+                                      session.directory,
+                                      name,
+                                    ),
+                                )
+                              }}
+                            >
+                              ✎
+                            </text>
+                          </Show>
                         </box>
                       )
                     }}
