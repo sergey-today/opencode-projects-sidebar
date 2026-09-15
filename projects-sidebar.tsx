@@ -598,8 +598,12 @@ function SidebarPanel(props: PanelProps) {
                   <text fg={colors.text}><b>{displayName}</b></text>
                   <StatusIndicator state={groupIndicator()} colors={colors} />
                   <box flexGrow={1} />
-                  <text fg={colors.textMuted}>{group.sessions.length}</text>
-                  <Show when={projectHover()}>
+                  <Show
+                    when={projectHover()}
+                    fallback={
+                      <text fg={colors.textMuted}>{group.sessions.length}</text>
+                    }
+                  >
                     <text
                       fg={colors.primary}
                       onMouseUp={(e: { stopPropagation(): void }) => {
@@ -695,15 +699,18 @@ function SidebarPanel(props: PanelProps) {
 
                           <box flexGrow={1} />
 
-                          <text fg={colors.textMuted}>
-                            {timeAgo(
-                              session.time?.updated ??
-                                session.time?.created ??
-                                Date.now(),
-                            )}
-                          </text>
-                          <Show when={hover()}>
-                            <text> </text>
+                          <Show
+                            when={hover()}
+                            fallback={
+                              <text fg={colors.textMuted}>
+                                {timeAgo(
+                                  session.time?.updated ??
+                                    session.time?.created ??
+                                    Date.now(),
+                                )}
+                              </text>
+                            }
+                          >
                             <text
                               fg={colors.primary}
                               onMouseUp={(e: { stopPropagation(): void }) => {
