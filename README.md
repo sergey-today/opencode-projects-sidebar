@@ -50,6 +50,8 @@ To use custom options, use the tuple form:
 - The list includes sessions from all local projects known to OpenCode and
   refreshes every five seconds.
 - Click a project header to collapse or expand its sessions.
+- Only the two most recent sessions and sessions with an active status are
+  shown initially; click `more` to show the remaining sessions.
 - Click a session to open it.
 - Hover a project header to create a clean session in its directory or rename
   the project.
