@@ -1,14 +1,21 @@
 /** @jsxImportSource @opentui/solid */
-import { stat } from "node:fs/promises"
+import { mkdir, readdir, stat } from "node:fs/promises"
+import { dirname, resolve } from "node:path"
+import { homedir } from "node:os"
 import {
   createEffect,
   createMemo,
   createSignal,
   For,
   onCleanup,
+  onMount,
   Show,
 } from "solid-js"
-import type { RGBA } from "@opentui/core"
+import type {
+  KeyEvent,
+  RGBA,
+  TextareaRenderable,
+} from "@opentui/core"
 import type {
   TuiPlugin,
   TuiPluginApi,
@@ -55,6 +62,23 @@ function truncate(text: string, max: number): string {
 function baseName(worktree: string): string {
   const parts = worktree.split(/[\\/]/).filter(Boolean)
   return parts.at(-1) ?? worktree
+}
+
+function expandHome(path: string): string {
+  if (path === "~") return homedir()
+  if (path.startsWith("~/") || path.startsWith("~\\")) {
+    return `${homedir()}${path.slice(1)}`
+  }
+  return path
+}
+
+function commonPrefix(values: string[]): string {
+  const first = values[0] ?? ""
+  let length = first.length
+  for (const value of values.slice(1)) {
+    while (length > 0 && !value.startsWith(first.slice(0, length))) length--
+  }
+  return first.slice(0, length)
 }
 
 function Spinner(props: { fg: RGBA }) {
@@ -196,7 +220,10 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
     api.route.navigate("session", { sessionID })
   }
 
-  const createSession = async (directory: string, fallbackDirectories: string[]) => {
+  const createSession = async (
+    directory: string,
+    fallbackDirectories: string[],
+  ): Promise<boolean> => {
     try {
       let availableDirectory: string | undefined
       for (const candidate of new Set([directory, ...fallbackDirectories])) {
@@ -217,20 +244,33 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
       }
       if (!availableDirectory) {
         showActionError(`Project directory no longer exists: ${directory}`)
-        return
+        return false
       }
       const result = await globalClient.v2.session.create({
         location: { directory: availableDirectory },
       })
       if (result.error || !result.data) {
         showActionError("Failed to create session")
-        return
+        return false
       }
       await refreshAll()
       openSession(result.data.data.id, availableDirectory)
+      return true
     } catch {
       showActionError("Failed to create session")
+      return false
     }
+  }
+
+  const createProject = async (input: string): Promise<boolean> => {
+    const directory = resolve(api.state.path.directory, expandHome(input))
+    try {
+      await mkdir(directory, { recursive: true })
+    } catch {
+      showActionError(`Failed to create project directory: ${directory}`)
+      return false
+    }
+    return createSession(directory, [])
   }
 
   const renameSession = async (
@@ -296,6 +336,63 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
             if (success) api.ui.dialog.clear()
           })
         }}
+        onCancel={() => api.ui.dialog.clear()}
+      />
+    ))
+  }
+
+  const suggestedProjectDirectory = () => {
+    const roots = new Map<
+      string,
+      { projects: Set<string>; sessions: number }
+    >()
+
+    for (const session of sessions()) {
+      const worktree = session.project?.worktree
+      if (
+        session.parentID !== undefined ||
+        !session.project ||
+        !worktree ||
+        worktree === "/"
+      ) {
+        continue
+      }
+      const directory = dirname(worktree)
+      const root = roots.get(directory) ?? {
+        projects: new Set<string>(),
+        sessions: 0,
+      }
+      root.projects.add(session.project.id)
+      root.sessions++
+      roots.set(directory, root)
+    }
+
+    let best: { directory: string; projects: number; sessions: number } | undefined
+    for (const [directory, root] of roots) {
+      const candidate = {
+        directory,
+        projects: root.projects.size,
+        sessions: root.sessions,
+      }
+      if (
+        !best ||
+        candidate.projects > best.projects ||
+        (candidate.projects === best.projects && candidate.sessions > best.sessions)
+      ) {
+        best = candidate
+      }
+    }
+    return best?.directory ?? dirname(api.state.path.directory)
+  }
+
+  const openProjectDialog = () => {
+    api.ui.dialog.setSize("medium")
+    api.ui.dialog.replace(() => (
+      <ProjectPathDialog
+        baseDirectory={api.state.path.directory}
+        colors={api.theme.current}
+        initialValue={suggestedProjectDirectory()}
+        onConfirm={createProject}
         onCancel={() => api.ui.dialog.clear()}
       />
     ))
@@ -415,6 +512,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
             completed={completed}
             clearCompleted={clearCompleted}
             createSession={createSession}
+            openProjectDialog={openProjectDialog}
             renameSession={renameSession}
             renameProject={renameProject}
             openPrompt={openPrompt}
@@ -429,6 +527,125 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
 
 // ---------------------------------------------------------------------------
 
+type ProjectPathDialogProps = {
+  baseDirectory: string
+  colors: TuiTheme["current"]
+  initialValue: string
+  onConfirm: (value: string) => Promise<boolean>
+  onCancel: () => void
+}
+
+function ProjectPathDialog(props: ProjectPathDialogProps) {
+  const [completion, setCompletion] = createSignal<string>()
+  const [busy, setBusy] = createSignal(false)
+  let textarea: TextareaRenderable
+
+  onMount(() => {
+    setTimeout(() => textarea?.focus(), 1)
+    textarea.gotoLineEnd()
+  })
+
+  const completePath = async (event: KeyEvent) => {
+    if (event.name.toLowerCase() !== "tab") return
+    event.preventDefault()
+    event.stopPropagation()
+
+    const current = textarea.plainText
+    const separator = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"))
+    const directoryPart = separator >= 0 ? current.slice(0, separator + 1) : ""
+    const prefix = current.slice(separator + 1)
+    const lookupDirectory = resolve(
+      props.baseDirectory,
+      expandHome(directoryPart || "."),
+    )
+
+    try {
+      const entries = await readdir(lookupDirectory, { withFileTypes: true })
+      const matches = entries
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))
+        .map((entry) => entry.name)
+        .sort()
+
+      if (matches.length === 0) {
+        setCompletion("No matching directories")
+        return
+      }
+
+      const nextPart = commonPrefix(matches)
+      if (nextPart.length === prefix.length && matches.length > 1) {
+        setCompletion(`${matches.length} matching directories`)
+        return
+      }
+
+      const next = `${directoryPart}${nextPart}${matches.length === 1 ? "/" : ""}`
+      textarea.setText(next)
+      textarea.gotoLineEnd()
+      setCompletion(
+        matches.length === 1
+          ? "Directory completed"
+          : `${matches.length} matching directories`,
+      )
+    } catch {
+      setCompletion("Directory not found")
+    }
+  }
+
+  const submit = () => {
+    const next = textarea.plainText.trim()
+    if (!next || busy()) return
+    setBusy(true)
+    textarea.blur()
+    void props.onConfirm(next).then((success) => {
+      if (success) {
+        props.onCancel()
+      } else {
+        setBusy(false)
+        textarea.focus()
+      }
+    }).catch(() => {
+      setBusy(false)
+      textarea.focus()
+    })
+  }
+
+  return (
+    <box paddingLeft={2} paddingRight={2} gap={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text fg={props.colors.text}><b>New project</b></text>
+        <text fg={props.colors.textMuted} onMouseUp={props.onCancel}>esc</text>
+      </box>
+      <box gap={1}>
+        <text fg={props.colors.textMuted}>
+          Enter a directory path. Press Tab to complete directories.
+        </text>
+        <textarea
+          height={3}
+          ref={(value) => (textarea = value)}
+          initialValue={props.initialValue}
+          placeholder="~/projects/my-project"
+          placeholderColor={props.colors.textMuted}
+          textColor={busy() ? props.colors.textMuted : props.colors.text}
+          focusedTextColor={busy() ? props.colors.textMuted : props.colors.text}
+          cursorColor={busy() ? props.colors.backgroundElement : props.colors.text}
+          onSubmit={submit}
+          onKeyDown={completePath}
+        />
+        <Show when={completion()}>
+          <text fg={props.colors.textMuted}>{completion()}</text>
+        </Show>
+        <Show when={busy()}>
+          <text fg={props.colors.textMuted}>Creating project...</text>
+        </Show>
+      </box>
+      <box paddingBottom={1} gap={1} flexDirection="row">
+        <Show when={!busy()} fallback={<text fg={props.colors.textMuted}>processing...</text>}>
+          <text fg={props.colors.text}>enter <span style={{ fg: props.colors.textMuted }}>submit</span></text>
+        </Show>
+      </box>
+    </box>
+  )
+}
+
 type PanelProps = {
   api: TuiPluginApi
   theme: TuiTheme
@@ -440,7 +657,8 @@ type PanelProps = {
   awaiting: () => Record<string, boolean>
   completed: () => Record<string, boolean>
   clearCompleted: (sessionID: string) => void
-  createSession: (directory: string, fallbackDirectories: string[]) => void
+  createSession: (directory: string, fallbackDirectories: string[]) => Promise<boolean>
+  openProjectDialog: () => void
   renameSession: (sessionID: string, directory: string, title: string) => Promise<boolean>
   renameProject: (projectID: string, directory: string, name: string) => Promise<boolean>
   openPrompt: (
@@ -595,6 +813,11 @@ function SidebarPanel(props: PanelProps) {
     return groups
   })
 
+  const projectCount = createMemo(() => list().length)
+  const sessionCount = createMemo(() =>
+    list().reduce((count, group) => count + group.sessions.length, 0),
+  )
+
   const colors = t()
 
   return (
@@ -608,6 +831,28 @@ function SidebarPanel(props: PanelProps) {
           <text fg={colors.error}>⚠ {props.error()}</text>
         </box>
       </Show>
+
+      <box
+        flexDirection="row"
+        alignItems="center"
+        paddingLeft={1}
+        paddingRight={1}
+        height={1}
+        flexShrink={0}
+      >
+        <text fg={colors.text}><b>Projects / Sessions</b></text>
+        <box flexGrow={1} />
+        <text fg={colors.textMuted}>{projectCount()} / {sessionCount()}</text>
+        <text
+          fg={colors.primary}
+          onMouseUp={(e: { stopPropagation(): void }) => {
+            e.stopPropagation()
+            props.openProjectDialog()
+          }}
+        >
+          +
+        </text>
+      </box>
 
       <box flexDirection="column" flexShrink={0}>
         <For each={list()}>

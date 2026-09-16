@@ -47,6 +47,11 @@ To use custom options, use the tuple form:
 
 - The project and session list is always rendered inside OpenCode's standard
   session sidebar below the native LSP section.
+- The sidebar header shows project/session counts. Click `+` there to enter a
+  new project path; press `Tab` in the path field to complete directory names.
+- The directory is created when confirmed, then OpenCode opens a new session in
+  it. The initial path is the parent directory containing the most projects,
+  with session count used as a tie-breaker.
 - The list includes sessions from all local projects known to OpenCode and
   refreshes every five seconds.
 - Click a project header to collapse or expand its sessions.
