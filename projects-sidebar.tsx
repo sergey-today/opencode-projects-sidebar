@@ -1,4 +1,5 @@
 /** @jsxImportSource @opentui/solid */
+import { stat } from "node:fs/promises"
 import {
   createEffect,
   createMemo,
@@ -121,7 +122,10 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const cfg = parseOptions(rawOptions as Record<string, unknown> | undefined)
   // The injected client scopes GET requests to the current session directory.
   const scopedClient = api.client.experimental.session as unknown as {
-    client: { getConfig(): { baseUrl?: string; headers?: HeadersInit; fetch?: typeof fetch } }
+    client: {
+      getConfig(): { baseUrl?: string; headers?: HeadersInit; fetch?: typeof fetch }
+      setConfig(config: { headers?: HeadersInit }): unknown
+    }
   }
   const clientConfig = scopedClient.client.getConfig()
   const headers = new Headers(clientConfig.headers)
@@ -179,17 +183,51 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const showActionError = (message: string) =>
     api.ui.toast({ variant: "error", message })
 
-  const createSession = async (directory: string) => {
+  // The TUI client is initialized for the directory OpenCode started in. Keep
+  // it aligned with the session opened from the cross-project sidebar.
+  const setSessionDirectory = (directory: string) => {
+    const nextHeaders = new Headers(clientConfig.headers)
+    nextHeaders.set("x-opencode-directory", encodeURIComponent(directory))
+    scopedClient.client.setConfig({ headers: nextHeaders })
+  }
+
+  const openSession = (sessionID: string, directory: string) => {
+    setSessionDirectory(directory)
+    api.route.navigate("session", { sessionID })
+  }
+
+  const createSession = async (directory: string, fallbackDirectories: string[]) => {
     try {
+      let availableDirectory: string | undefined
+      for (const candidate of new Set([directory, ...fallbackDirectories])) {
+        try {
+          if ((await stat(candidate)).isDirectory()) {
+            availableDirectory = candidate
+            break
+          }
+        } catch (err) {
+          if (
+            typeof err === "object" &&
+            err !== null &&
+            "code" in err &&
+            err.code === "ENOENT"
+          ) continue
+          throw err
+        }
+      }
+      if (!availableDirectory) {
+        showActionError(`Project directory no longer exists: ${directory}`)
+        return
+      }
       const result = await globalClient.v2.session.create({
-        location: { directory },
+        location: { directory: availableDirectory },
       })
       if (result.error || !result.data) {
         showActionError("Failed to create session")
         return
       }
       await refreshAll()
-      api.route.navigate("session", { sessionID: result.data.data.id })
+      openSession(result.data.data.id, availableDirectory)
     } catch {
       showActionError("Failed to create session")
     }
@@ -380,6 +418,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
             renameSession={renameSession}
             renameProject={renameProject}
             openPrompt={openPrompt}
+            openSession={openSession}
             error={error}
           />
         )
@@ -401,7 +440,7 @@ type PanelProps = {
   awaiting: () => Record<string, boolean>
   completed: () => Record<string, boolean>
   clearCompleted: (sessionID: string) => void
-  createSession: (directory: string) => void
+  createSession: (directory: string, fallbackDirectories: string[]) => void
   renameSession: (sessionID: string, directory: string, title: string) => Promise<boolean>
   renameProject: (projectID: string, directory: string, name: string) => Promise<boolean>
   openPrompt: (
@@ -409,6 +448,7 @@ type PanelProps = {
     value: string,
     onConfirm: (value: string) => Promise<boolean>,
   ) => void
+  openSession: (sessionID: string, directory: string) => void
   error: () => string | undefined
 }
 
@@ -608,7 +648,10 @@ function SidebarPanel(props: PanelProps) {
                       fg={colors.primary}
                       onMouseUp={(e: { stopPropagation(): void }) => {
                         e.stopPropagation()
-                        props.createSession(group.project.worktree)
+                        props.createSession(
+                          group.project.worktree,
+                          group.sessions.map((session) => session.directory),
+                        )
                       }}
                     >
                       +
@@ -676,9 +719,7 @@ function SidebarPanel(props: PanelProps) {
                           }
                           onMouseUp={(e: { stopPropagation(): void }) => {
                             e.stopPropagation()
-                            props.api.route.navigate("session", {
-                              sessionID: session.id,
-                            })
+                            props.openSession(session.id, session.directory)
                           }}
                           onMouseOver={() => showSessionHover(session.id)}
                           onMouseOut={hideSessionHover}
