@@ -729,13 +729,9 @@ function SidebarPanel(props: PanelProps) {
                           <text> </text>
 
                           <text
-                            fg={
-                              active() || hover()
-                                ? colors.text
-                                : colors.textMuted
-                            }
+                            fg={active() ? colors.warning : hover() ? colors.text : colors.textMuted}
                           >
-                            {title}
+                            {active() ? <b>{title}</b> : title}
                           </text>
 
                           <box flexGrow={1} />
