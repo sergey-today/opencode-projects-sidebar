@@ -837,6 +837,7 @@ function SidebarPanel(props: PanelProps) {
     <box
       flexDirection="column"
       flexShrink={0}
+      marginLeft={-1}
     >
       {/* Error banner */}
       <Show when={props.error()}>
