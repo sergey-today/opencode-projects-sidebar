@@ -171,6 +171,9 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const [folded, setFolded] = createSignal<Record<string, boolean>>(
     api.kv.get<Record<string, boolean>>("projects_sb.folded") ?? {},
   )
+  const [showAllSessions, setShowAllSessions] = createSignal<Record<string, boolean>>(
+    api.kv.get<Record<string, boolean>>("projects_sb.show_all_sessions") ?? {},
+  )
 
   const toggleFold = (projectId: string) => {
     setFolded((prev) => {
@@ -179,6 +182,22 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
       return next
     })
   }
+
+  const showMoreSessions = (projectID: string) =>
+    setShowAllSessions((prev) => {
+      const next = { ...prev, [projectID]: true }
+      api.kv.set("projects_sb.show_all_sessions", next)
+      return next
+    })
+
+  const resetShownSessions = (projectID: string) =>
+    setShowAllSessions((prev) => {
+      if (!prev[projectID]) return prev
+      const next = { ...prev }
+      delete next[projectID]
+      api.kv.set("projects_sb.show_all_sessions", next)
+      return next
+    })
 
   // ---- data loading ----
   const refreshAll = async () => {
@@ -506,11 +525,14 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
             cfg={cfg}
             toggleFold={toggleFold}
             folded={folded}
+            showAllSessions={showAllSessions}
             sessions={sessions}
             statuses={statuses}
             awaiting={awaiting}
             completed={completed}
             clearCompleted={clearCompleted}
+            showMoreSessions={showMoreSessions}
+            resetShownSessions={resetShownSessions}
             createSession={createSession}
             openProjectDialog={openProjectDialog}
             renameSession={renameSession}
@@ -652,11 +674,14 @@ type PanelProps = {
   cfg: Cfg
   toggleFold: (projectId: string) => void
   folded: () => Record<string, boolean>
+  showAllSessions: () => Record<string, boolean>
   sessions: () => GlobalSession[]
   statuses: () => Record<string, SessionStatus>
   awaiting: () => Record<string, boolean>
   completed: () => Record<string, boolean>
   clearCompleted: (sessionID: string) => void
+  showMoreSessions: (projectID: string) => void
+  resetShownSessions: (projectID: string) => void
   createSession: (directory: string, fallbackDirectories: string[]) => Promise<boolean>
   openProjectDialog: () => void
   renameSession: (sessionID: string, directory: string, title: string) => Promise<boolean>
@@ -682,7 +707,6 @@ function SidebarPanel(props: PanelProps) {
 
   const [hoverProject, setHoverProject] = createSignal<string | undefined>()
   const [hoverSession, setHoverSession] = createSignal<string | undefined>()
-  const [showAllSessions, setShowAllSessions] = createSignal<Record<string, boolean>>({})
   let projectHoverTimer: ReturnType<typeof setTimeout> | undefined
   let sessionHoverTimer: ReturnType<typeof setTimeout> | undefined
   const [now, setNow] = createSignal(Date.now())
@@ -738,9 +762,9 @@ function SidebarPanel(props: PanelProps) {
     !!props.completed()[session.id]
 
   const visibleSessions = (group: ProjectGroup) => {
-    if (showAllSessions()[group.project.id]) return group.sessions
+    if (props.showAllSessions()[group.project.id]) return group.sessions
 
-    const recent = group.sessions.slice(0, 2)
+    const recent = group.sessions.slice(0, 1)
     const recentIDs = new Set(recent.map((session) => session.id))
     return [
       ...recent,
@@ -749,17 +773,6 @@ function SidebarPanel(props: PanelProps) {
       ),
     ]
   }
-
-  const showMoreSessions = (projectID: string) =>
-    setShowAllSessions((prev) => ({ ...prev, [projectID]: true }))
-
-  const resetShownSessions = (projectID: string) =>
-    setShowAllSessions((prev) => {
-      if (!prev[projectID]) return prev
-      const next = { ...prev }
-      delete next[projectID]
-      return next
-    })
 
   createEffect(() => {
     const id = currentID()
@@ -904,7 +917,7 @@ function SidebarPanel(props: PanelProps) {
                   backgroundColor={projectHover() ? colors.backgroundElement : undefined}
                   onMouseUp={(e: { stopPropagation(): void }) => {
                     e.stopPropagation()
-                    if (expanded()) resetShownSessions(group.project.id)
+                    if (expanded()) props.resetShownSessions(group.project.id)
                     props.toggleFold(group.project.id)
                   }}
                   onMouseOver={() => showProjectHover(group.project.id)}
@@ -1049,7 +1062,7 @@ function SidebarPanel(props: PanelProps) {
                   </For>
                   <Show
                     when={
-                      !showAllSessions()[group.project.id] &&
+                      !props.showAllSessions()[group.project.id] &&
                       visibleSessions(group).length < group.sessions.length
                     }
                   >
@@ -1059,7 +1072,7 @@ function SidebarPanel(props: PanelProps) {
                       flexShrink={0}
                       onMouseUp={(e: { stopPropagation(): void }) => {
                         e.stopPropagation()
-                        showMoreSessions(group.project.id)
+                        props.showMoreSessions(group.project.id)
                       }}
                     >
                       <text fg={colors.primary}>more</text>
