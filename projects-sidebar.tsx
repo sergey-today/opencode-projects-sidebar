@@ -925,7 +925,9 @@ function SidebarPanel(props: PanelProps) {
                 >
                   <text fg={colors.textMuted}>{expanded() ? "▾" : "▸"}</text>
                   <text fg={colors.text}><b>{displayName}</b></text>
-                  <StatusIndicator state={groupIndicator()} colors={colors} />
+                  <Show when={!expanded()}>
+                    <StatusIndicator state={groupIndicator()} colors={colors} />
+                  </Show>
                   <box flexGrow={1} />
                   <Show
                     when={projectHover()}
