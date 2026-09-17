@@ -24,11 +24,14 @@ import type {
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type {
   GlobalSession,
+  Project,
   ProjectSummary,
   SessionStatus,
 } from "@opencode-ai/sdk/v2"
 
 const SPIN = ["◐", "◓", "◑", "◒"]
+const COMPLETED_SESSIONS_KEY = "projects_sb.completed_sessions"
+const PROJECT_NAMES_KEY = "projects_sb.project_names"
 
 type Cfg = {
   width: number
@@ -163,9 +166,15 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
 
   // ---- state ----
   const [sessions, setSessions] = createSignal<GlobalSession[]>([])
+  const [projects, setProjects] = createSignal<Project[]>([])
+  const [projectNames, setProjectNames] = createSignal<Record<string, string>>(
+    api.kv.get<Record<string, string>>(PROJECT_NAMES_KEY) ?? {},
+  )
   const [statuses, setStatuses] = createSignal<Record<string, SessionStatus>>({})
   const [awaiting, setAwaiting] = createSignal<Record<string, boolean>>({})
-  const [completed, setCompleted] = createSignal<Record<string, boolean>>({})
+  const [completed, setCompleted] = createSignal<Record<string, boolean>>(
+    api.kv.get<Record<string, boolean>>(COMPLETED_SESSIONS_KEY) ?? {},
+  )
   const [error, setError] = createSignal<string | undefined>()
 
   const [folded, setFolded] = createSignal<Record<string, boolean>>(
@@ -202,8 +211,9 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   // ---- data loading ----
   const refreshAll = async () => {
     try {
-      const [sessRes, statRes] = await Promise.all([
+      const [sessRes, projectRes, statRes] = await Promise.all([
         globalClient.experimental.session.list({ limit: cfg.limit }),
+        globalClient.project.list(),
         api.client.session.status(),
       ])
       if (sessRes.error) {
@@ -211,8 +221,10 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
         return
       }
       const next: GlobalSession[] = Array.isArray(sessRes.data) ? sessRes.data : []
+      const nextProjects = Array.isArray(projectRes.data) ? projectRes.data : []
       const stats = statRes.data && !statRes.error ? statRes.data : {}
       setSessions(next)
+      setProjects(nextProjects)
       setStatuses((prev) => ({ ...prev, ...stats }))
       setError(undefined)
     } catch (err) {
@@ -316,10 +328,18 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   }
 
   const renameProject = async (
-    projectID: string,
+    projectID: string | undefined,
     directory: string,
     name: string,
   ): Promise<boolean> => {
+    if (!projectID) {
+      setProjectNames((prev) => {
+        const next = { ...prev, [directory]: name }
+        api.kv.set(PROJECT_NAMES_KEY, next)
+        return next
+      })
+      return true
+    }
     try {
       const result = await globalClient.project.update({
         projectID,
@@ -433,13 +453,19 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
       if (!prev[sessionID]) return prev
       const next = { ...prev }
       delete next[sessionID]
+      api.kv.set(COMPLETED_SESSIONS_KEY, next)
       return next
     })
 
   const markCompleted = (sessionID: string) => {
     const route = api.route.current
     if (route.name === "session" && route.params?.sessionID === sessionID) return
-    setCompleted((prev) => ({ ...prev, [sessionID]: true }))
+    setCompleted((prev) => {
+      if (prev[sessionID]) return prev
+      const next = { ...prev, [sessionID]: true }
+      api.kv.set(COMPLETED_SESSIONS_KEY, next)
+      return next
+    })
   }
 
   unsubs.push(
@@ -527,6 +553,8 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
             folded={folded}
             showAllSessions={showAllSessions}
             sessions={sessions}
+            projects={projects}
+            projectNames={projectNames}
             statuses={statuses}
             awaiting={awaiting}
             completed={completed}
@@ -676,6 +704,8 @@ type PanelProps = {
   folded: () => Record<string, boolean>
   showAllSessions: () => Record<string, boolean>
   sessions: () => GlobalSession[]
+  projects: () => Project[]
+  projectNames: () => Record<string, string>
   statuses: () => Record<string, SessionStatus>
   awaiting: () => Record<string, boolean>
   completed: () => Record<string, boolean>
@@ -685,7 +715,7 @@ type PanelProps = {
   createSession: (directory: string, fallbackDirectories: string[]) => Promise<boolean>
   openProjectDialog: () => void
   renameSession: (sessionID: string, directory: string, title: string) => Promise<boolean>
-  renameProject: (projectID: string, directory: string, name: string) => Promise<boolean>
+  renameProject: (projectID: string | undefined, directory: string, name: string) => Promise<boolean>
   openPrompt: (
     title: string,
     value: string,
@@ -783,9 +813,16 @@ function SidebarPanel(props: PanelProps) {
     void now()
     const map = new Map<string, ProjectGroup>()
     const projectsByWorktree = new Map<string, ProjectSummary>()
+    const projectsByID = new Map<string, ProjectSummary>()
+    for (const project of props.projects()) {
+      if (project.worktree === "/") continue
+      projectsByWorktree.set(project.worktree, project)
+      projectsByID.set(project.id, project)
+    }
     for (const session of props.sessions()) {
       if (session.parentID !== undefined || !session.project || session.project.worktree === "/") continue
       projectsByWorktree.set(session.project.worktree, session.project)
+      projectsByID.set(session.project.id, session.project)
     }
 
     for (const session of props.sessions()) {
@@ -795,7 +832,7 @@ function SidebarPanel(props: PanelProps) {
       // record rooted at /. Reuse a known project for that directory when one
       // exists; otherwise keep the directory in its own sidebar group.
       const project = globalSession
-        ? projectsByWorktree.get(session.directory)
+        ? projectsByWorktree.get(session.directory) ?? projectsByID.get(session.projectID)
         : session.project
       const key = project?.id ?? `directory:${session.directory}`
       let group = map.get(key)
@@ -804,7 +841,7 @@ function SidebarPanel(props: PanelProps) {
           project: {
             id: key,
             worktree: project?.worktree ?? session.directory,
-            name: project?.name,
+            name: project?.name ?? props.projectNames()[session.directory],
           },
           renameProjectID: project?.id,
           sessions: [],
@@ -948,28 +985,24 @@ function SidebarPanel(props: PanelProps) {
                     >
                       +
                     </text>
-                    <Show when={group.renameProjectID}>
-                      {(projectID) => (
-                        <text
-                          fg={colors.primary}
-                          onMouseUp={(e: { stopPropagation(): void }) => {
-                            e.stopPropagation()
-                            props.openPrompt(
-                              "Rename project",
-                              projectName,
-                              (name) =>
-                                props.renameProject(
-                                  projectID(),
-                                  group.project.worktree,
-                                  name,
-                                ),
-                            )
-                          }}
-                        >
-                          ✎
-                        </text>
-                      )}
-                    </Show>
+                    <text
+                      fg={colors.primary}
+                      onMouseUp={(e: { stopPropagation(): void }) => {
+                        e.stopPropagation()
+                        props.openPrompt(
+                          "Rename project",
+                          projectName,
+                          (name) =>
+                            props.renameProject(
+                              group.renameProjectID,
+                              group.project.worktree,
+                              name,
+                            ),
+                        )
+                      }}
+                    >
+                      ✎
+                    </text>
                   </Show>
                 </box>
 
