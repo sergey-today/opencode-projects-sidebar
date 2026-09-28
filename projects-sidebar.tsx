@@ -30,7 +30,11 @@ import type {
 } from "@opencode-ai/sdk/v2"
 
 const SPIN = ["◐", "◓", "◑", "◒"]
-const COMPLETED_SESSIONS_KEY = "projects_sb.completed_sessions"
+// Versioned so older OpenCode processes cannot restore stale sidebar state.
+const COMPLETED_SESSIONS_KEY = "projects_sb.completed_sessions.v3"
+const VIEWED_SESSIONS_KEY = "projects_sb.viewed_sessions.v3"
+const FOLDED_KEY = "projects_sb.folded.v2"
+const SHOW_ALL_SESSIONS_KEY = "projects_sb.show_all_sessions.v2"
 const PROJECT_NAMES_KEY = "projects_sb.project_names"
 
 type Cfg = {
@@ -147,6 +151,10 @@ export const id = "projects-sidebar"
 
 export const tui: TuiPlugin = async (api, rawOptions) => {
   const cfg = parseOptions(rawOptions as Record<string, unknown> | undefined)
+  while (!api.kv.ready) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
   // The injected client scopes GET requests to the current session directory.
   const scopedClient = api.client.experimental.session as unknown as {
     client: {
@@ -172,22 +180,31 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   )
   const [statuses, setStatuses] = createSignal<Record<string, SessionStatus>>({})
   const [awaiting, setAwaiting] = createSignal<Record<string, boolean>>({})
-  const [completed, setCompleted] = createSignal<Record<string, boolean>>(
-    api.kv.get<Record<string, boolean>>(COMPLETED_SESSIONS_KEY) ?? {},
+  const savedCompleted = api.kv.get<Record<string, number> | undefined>(
+    COMPLETED_SESSIONS_KEY,
+  )
+  const legacyCompleted = api.kv.get<Record<string, boolean>>(
+    "projects_sb.completed_sessions.v2",
+  ) ?? {}
+  const [completed, setCompleted] = createSignal<Record<string, number>>(
+    savedCompleted ?? {},
+  )
+  const [viewed, setViewed] = createSignal<Record<string, number>>(
+    api.kv.get<Record<string, number>>(VIEWED_SESSIONS_KEY) ?? {},
   )
   const [error, setError] = createSignal<string | undefined>()
 
   const [folded, setFolded] = createSignal<Record<string, boolean>>(
-    api.kv.get<Record<string, boolean>>("projects_sb.folded") ?? {},
+    api.kv.get<Record<string, boolean>>(FOLDED_KEY) ?? {},
   )
   const [showAllSessions, setShowAllSessions] = createSignal<Record<string, boolean>>(
-    api.kv.get<Record<string, boolean>>("projects_sb.show_all_sessions") ?? {},
+    api.kv.get<Record<string, boolean>>(SHOW_ALL_SESSIONS_KEY) ?? {},
   )
 
   const toggleFold = (projectId: string) => {
     setFolded((prev) => {
       const next = { ...prev, [projectId]: !prev[projectId] }
-      api.kv.set("projects_sb.folded", next)
+      api.kv.set(FOLDED_KEY, next)
       return next
     })
   }
@@ -195,7 +212,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   const showMoreSessions = (projectID: string) =>
     setShowAllSessions((prev) => {
       const next = { ...prev, [projectID]: true }
-      api.kv.set("projects_sb.show_all_sessions", next)
+      api.kv.set(SHOW_ALL_SESSIONS_KEY, next)
       return next
     })
 
@@ -204,9 +221,39 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
       if (!prev[projectID]) return prev
       const next = { ...prev }
       delete next[projectID]
-      api.kv.set("projects_sb.show_all_sessions", next)
+      api.kv.set(SHOW_ALL_SESSIONS_KEY, next)
       return next
     })
+
+  const removeCompleted = (sessionID: string) =>
+    setCompleted((prev) => {
+      if (!prev[sessionID]) return prev
+      const next = { ...prev }
+      delete next[sessionID]
+      api.kv.set(COMPLETED_SESSIONS_KEY, next)
+      return next
+    })
+
+  const clearCompleted = (sessionID: string) => {
+    if (!completed()[sessionID] && viewed()[sessionID]) return
+    const viewedAt = Date.now()
+    setViewed((prev) => {
+      const next = { ...prev, [sessionID]: viewedAt }
+      api.kv.set(VIEWED_SESSIONS_KEY, next)
+      return next
+    })
+    removeCompleted(sessionID)
+  }
+
+  const syncViewedSession = () => {
+    const route = api.route.current
+    if (route.name !== "session") return
+    const sessionID = route.params?.sessionID
+    if (typeof sessionID === "string") clearCompleted(sessionID)
+  }
+  syncViewedSession()
+  const viewedSessionTimer = setInterval(syncViewedSession, 250)
+  api.lifecycle.onDispose(() => clearInterval(viewedSessionTimer))
 
   // ---- data loading ----
   const refreshAll = async () => {
@@ -232,6 +279,18 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
     }
   }
   await refreshAll()
+  if (savedCompleted === undefined) {
+    const sessionsByID = new Map(sessions().map((session) => [session.id, session]))
+    const migrated = Object.fromEntries(
+      Object.keys(legacyCompleted).flatMap((sessionID) => {
+        const completedAt = sessionsByID.get(sessionID)?.time?.updated
+        if (!completedAt || completedAt <= (viewed()[sessionID] ?? 0)) return []
+        return [[sessionID, completedAt]]
+      }),
+    )
+    setCompleted(migrated)
+    api.kv.set(COMPLETED_SESSIONS_KEY, migrated)
+  }
   const refreshTimer = setInterval(() => void refreshAll(), 5_000)
   api.lifecycle.onDispose(() => clearInterval(refreshTimer))
 
@@ -247,6 +306,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   }
 
   const openSession = (sessionID: string, directory: string) => {
+    clearCompleted(sessionID)
     setSessionDirectory(directory)
     api.route.navigate("session", { sessionID })
   }
@@ -448,21 +508,16 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
       return next
     })
 
-  const clearCompleted = (sessionID: string) =>
-    setCompleted((prev) => {
-      if (!prev[sessionID]) return prev
-      const next = { ...prev }
-      delete next[sessionID]
-      api.kv.set(COMPLETED_SESSIONS_KEY, next)
-      return next
-    })
-
   const markCompleted = (sessionID: string) => {
     const route = api.route.current
     if (route.name === "session" && route.params?.sessionID === sessionID) return
+    const completedAt =
+      sessions().find((session) => session.id === sessionID)?.time?.updated ??
+      Date.now()
+    if (completedAt <= (viewed()[sessionID] ?? 0)) return
     setCompleted((prev) => {
-      if (prev[sessionID]) return prev
-      const next = { ...prev, [sessionID]: true }
+      if ((prev[sessionID] ?? 0) >= completedAt) return prev
+      const next = { ...prev, [sessionID]: completedAt }
       api.kv.set(COMPLETED_SESSIONS_KEY, next)
       return next
     })
@@ -475,7 +530,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
       setStatuses((prev) => ({ ...prev, [sessionID]: status }))
       if (status.type === "busy") {
         clearAwaiting(sessionID)
-        clearCompleted(sessionID)
+        removeCompleted(sessionID)
       } else if (
         status.type === "idle" &&
         (previous?.type === "busy" || previous?.type === "retry")
@@ -543,10 +598,10 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
   api.slots.register({
     order: 350,
     slots: {
-      sidebar_content(ctx) {
+      sidebar_content(ctx, slotProps) {
         return (
           <SidebarPanel
-            api={api}
+            currentSessionID={slotProps.session_id}
             theme={ctx.theme}
             cfg={cfg}
             toggleFold={toggleFold}
@@ -558,6 +613,7 @@ export const tui: TuiPlugin = async (api, rawOptions) => {
             statuses={statuses}
             awaiting={awaiting}
             completed={completed}
+            viewed={viewed}
             clearCompleted={clearCompleted}
             showMoreSessions={showMoreSessions}
             resetShownSessions={resetShownSessions}
@@ -697,7 +753,7 @@ function ProjectPathDialog(props: ProjectPathDialogProps) {
 }
 
 type PanelProps = {
-  api: TuiPluginApi
+  currentSessionID: string
   theme: TuiTheme
   cfg: Cfg
   toggleFold: (projectId: string) => void
@@ -708,7 +764,8 @@ type PanelProps = {
   projectNames: () => Record<string, string>
   statuses: () => Record<string, SessionStatus>
   awaiting: () => Record<string, boolean>
-  completed: () => Record<string, boolean>
+  completed: () => Record<string, number>
+  viewed: () => Record<string, number>
   clearCompleted: (sessionID: string) => void
   showMoreSessions: (projectID: string) => void
   resetShownSessions: (projectID: string) => void
@@ -780,16 +837,17 @@ function SidebarPanel(props: PanelProps) {
   })
 
   const currentID = createMemo(() => {
-    const route = props.api.route.current
-    if (route.name !== "session") return undefined
-    return route.params?.sessionID
+    return props.currentSessionID
   })
 
   const sessionIsActive = (session: GlobalSession) =>
     !!props.awaiting()[session.id] ||
     props.statuses()[session.id]?.type === "busy" ||
     props.statuses()[session.id]?.type === "retry" ||
-    !!props.completed()[session.id]
+    (props.completed()[session.id] ?? 0) > (props.viewed()[session.id] ?? 0)
+
+  const hasUnreadCompleted = (sessionID: string) =>
+    (props.completed()[sessionID] ?? 0) > (props.viewed()[sessionID] ?? 0)
 
   const visibleSessions = (group: ProjectGroup) => {
     if (props.showAllSessions()[group.project.id]) return group.sessions
@@ -934,7 +992,7 @@ function SidebarPanel(props: PanelProps) {
               if (
                 group.sessions.some(
                   (session) =>
-                    session.id !== currentID() && !!props.completed()[session.id],
+                    session.id !== currentID() && hasUnreadCompleted(session.id),
                 )
               ) {
                 return "completed"
@@ -1015,7 +1073,7 @@ function SidebarPanel(props: PanelProps) {
                       const status = () => props.statuses()[session.id]
                       const isAwaiting = () => !!props.awaiting()[session.id]
                       const isCompleted = () =>
-                        !active() && !!props.completed()[session.id]
+                        !active() && hasUnreadCompleted(session.id)
                       const title = truncate(
                         session.title || "Untitled",
                         cfg.width - 10,
